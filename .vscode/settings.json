@@ -1,3 +1,13 @@
 {
-    "ROS2.distro": "humble"
+    "ROS2.distro": "humble",
+    "chat.tools.terminal.autoApprove": {
+        "/^cmake --build /home/think/Documents/gs-robot/build -j\\$\\(nproc\\) 2>&1 \\| tail -15$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^cmake -S /home/think/Documents/gs-robot -B /home/think/Documents/gs-robot/build 2>&1 \\| grep -v \"Warning\\\\\\|warning\" && cmake --build /home/think/Documents/gs-robot/build -j\\$\\(nproc\\) 2>&1 \\| tail -15$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }
