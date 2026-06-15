@@ -41,6 +41,7 @@ public:
     RobotDescription robotDescription;
     Pose lastFeedbackPositionPose();
     void makeTrajectory(TRAJECTORY_TYPE type);
+    void makeMoveL();
     //机械臂相关end
 
 protected:
@@ -95,6 +96,7 @@ private slots:
     void on_visual_stop_clicked();
     void on_adjustGo_clicked();
     void on_run_by_vision_clicked();
+    void on_moveLGo_clicked();
 
 private:
     EngDatas engDatas;

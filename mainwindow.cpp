@@ -847,6 +847,166 @@ void MainWindow::makeTrajectory(TRAJECTORY_TYPE type){
     return;
 }
 
+void MainWindow::makeMoveL()
+{
+    // 位置 ml_x/y/z：用户输入米 (m)，KDL::Vector 内部存储也是米
+    // 姿态 ml_roll/pitch/yaw：用户输入度 (deg)，
+    // Step 1: 获取当前末端位姿
+    Pose start_pose = lastFeedbackPositionPose();
+    bool jointLimit = ui->cb_jointLimit_3->currentIndex() == 0;
+    double v_max = ui->v_set->text().toDouble();   // deg/s → 用于归一化
+    double a_max = ui->acc_set->text().toDouble();  // deg/s² → 用于归一化
+
+    KDL::Rotation R_start = KDL::Rotation::Quaternion(
+        start_pose.xx, start_pose.yy, start_pose.zz, start_pose.ww);
+    KDL::Vector P_start(start_pose.x, start_pose.y, start_pose.z);
+
+    // Step 2: 直接读取目标位姿（基坐标系下的绝对值）
+    KDL::Vector P_target(ui->ml_x->text().toDouble(),
+                         ui->ml_y->text().toDouble(),
+                         ui->ml_z->text().toDouble());
+    double roll_deg  = ui->ml_roll->text().toDouble();
+    double pitch_deg = ui->ml_pitch->text().toDouble();
+    double yaw_deg   = ui->ml_yaw->text().toDouble();
+    KDL::Rotation R_target = KDL::Rotation::RPY(
+        roll_deg  * KDL::deg2rad,
+        pitch_deg * KDL::deg2rad,
+        yaw_deg   * KDL::deg2rad);
+
+    // Step 3: 计算归一化偏差
+    // 位置距离
+    KDL::Vector dP = P_target - P_start;
+    double dist = dP.Norm();
+
+    // 姿态偏差 → 轴角
+    KDL::Rotation R_err = R_start.Inverse() * R_target;
+    KDL::Vector axis;
+    double theta = R_err.GetRotAngle(axis);  // rad
+
+    // 归一化标量: max(位置距离, 角度*0.1)
+    double delta_max = std::max(dist, theta * 0.1);
+    if (delta_max < 1e-6) {
+        printf("makeMoveL: 起点与终点重合，无需运动\n");
+        return;
+    }
+    double v_norm = v_max / delta_max;
+    double a_norm = a_max / delta_max;
+
+    // Step 4: Ruckig 1D 规划 s(t) ∈ [0,1]
+    ruckig::Ruckig<1> otg(0.01);
+    ruckig::InputParameter<1> input;
+    ruckig::OutputParameter<1> output;
+    input.current_position = {0.0};
+    input.current_velocity = {0.0};
+    input.current_acceleration = {0.0};
+    input.target_position = {1.0};
+    input.target_velocity = {0.0};
+    input.target_acceleration = {0.0};
+    input.max_velocity = {v_norm};
+    input.min_velocity = {-v_norm};
+    input.max_acceleration = {a_norm};
+    input.min_acceleration = {-a_norm};
+    input.max_jerk = {2.0};
+
+    ruckig::Trajectory<1> trajectory;
+    ruckig::Result result = otg.calculate(input, trajectory);
+    if (result == ruckig::Result::ErrorInvalidInput) {
+        std::cerr << "makeMoveL: Ruckig 输入参数无效" << std::endl;
+        return;
+    }
+    double duration = trajectory.get_duration();
+    printf("makeMoveL: 规划时长=%.3fs, dist=%.4fm, theta=%.4fdeg\n",
+           duration, dist, theta * KDL::rad2deg);
+
+    // Step 5: 按 dt 步长采样 s(t)，生成笛卡尔轨迹点
+    std::array<double, 1> s_arr;
+    std::array<std::vector<int32_t>, KDL_ROBOT_JOINT_NUM> lines;
+    std::queue<std::array<double, KDL_ROBOT_JOINT_NUM>> joints;
+    int scan10 = 0;
+
+    std::array<std::vector<int32_t>, 7> lines_arr;
+    int cnt = 0;
+
+    for (double t = 0.0; t <= duration; t += 0.01) {
+        trajectory.at_time(t, s_arr);
+        double s = s_arr[0];
+
+        // 位置：线性插值
+        KDL::Vector P = P_start + s * dP;
+
+        // 姿态：SCLERP（球面插值）
+        KDL::Rotation R;
+        if (theta < 1e-6) {
+            // 姿态几乎不变，直接用起始姿态
+            R = R_start;
+        } else {
+            double theta_s = s * theta;
+            KDL::Vector axis_s = axis;  // 旋转轴不变
+            KDL::Rotation R_s = KDL::Rotation::Rot2(axis_s, theta_s);
+            R = R_start * R_s;
+        }
+
+        // 转为 Pose
+        double qx, qy, qz, qw;
+        R.GetQuaternion(qx, qy, qz, qw);
+        Pose cur_pose(P.x(), P.y(), P.z(), qx, qy, qz, qw);
+
+        // Step 6: 逆运动学
+        double out[KDL_ROBOT_JOINT_NUM] = {0.0};
+        int n = robotDescription.computeInverseKinematics(R, P, out, jointLimit);
+        if (n == -1) {
+            printf("makeMoveL: IK 求解失败 t=%.4f s=%.6f\n", t, s);
+            return;
+        }
+
+        // 关节步进检测
+        for (int i = 0; i < KDL_ROBOT_JOINT_NUM; i++) {
+            double eps = out[i] * KDL::rad2deg - robotDescription.lastFeedbackAngle[i] * KDL::rad2deg;
+            if (jointLimit && (std::abs(eps) > 0.02035)) {
+                printf("makeMoveL: 关节步进过大, t=%d|i=%d|eps=%.6f\n", (int)cnt, i, eps);
+                return;
+            }
+            // 关节角 → 脉冲
+            if (i <= 3) {
+                lines_arr[i].push_back(out[i] * CNT_PER_CYCLE * BIG_JOINT_DACC / 2.0 / KDL::PI);
+            } else {
+                lines_arr[i].push_back(out[i] * CNT_PER_CYCLE * SMALL_JOINT_DACC / 2.0 / KDL::PI);
+            }
+            robotDescription.lastFeedbackAngle[i] = out[i];
+        }
+
+        // TCP 发送用的关节角（每10个点取一个）
+        if (scan10 % 10 == 0) {
+            std::array<double, KDL_ROBOT_JOINT_NUM> ja;
+            for (int i = 0; i < KDL_ROBOT_JOINT_NUM; i++) {
+                ja[i] = out[i] * KDL::rad2deg;
+            }
+            joints.push(ja);
+        }
+        scan10++;
+        cnt++;
+    }
+
+    printf("makeMoveL: 共生成 %d 个轨迹点\n", cnt);
+
+    socketT.joints = joints;
+    socketT.send_msg = true;
+
+    InputsCMD cmd;
+    cmd.slave_index = 7;
+    cmd.exe_index   = 0xff;
+    cmd.cmd         = STATE_RUN;
+    for (int i = 0; i < KDL_ROBOT_JOINT_NUM; i++) {
+        cmd.profileDatas[i].position = lines_arr[i];
+    }
+    etherThread.setInputsCMD(cmd);
+}
+
+void MainWindow::on_moveLGo_clicked()
+{
+    makeMoveL();
+}
+
 void MainWindow::on_actStart_clicked()
 {
     //绑定端口
