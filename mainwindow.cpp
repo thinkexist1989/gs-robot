@@ -6,6 +6,10 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    // 六维力传感器坐标系 → 法兰盘坐标系的旋转变换
+    // 传感器坐标系 = 法兰盘坐标系绕Z轴旋转135°
+    // 反变换：传感器系 → 法兰系 需绕Z轴旋转 -135°
+    sensorRot = KDL::Rotation::RotZ(-135.0 * KDL::deg2rad);
     connect(&socketT, SIGNAL(sendRobotParam(RobotParam)), this, SLOT(onThread_RobotParam(RobotParam)));
     socketT.start();
     tcpClient=new QTcpSocket(this); //创建socket变量
@@ -847,10 +851,56 @@ void MainWindow::makeTrajectory(TRAJECTORY_TYPE type){
     return;
 }
 
+void MainWindow::computeAdmittanceDelta(const M4313_TxPDO& ft, const KDL::Rotation& R_tool,
+                                        double dt, double& delta_x, double& delta_y, double& delta_rz)
+{
+    double fx = ft.fx, fy = ft.fy;
+    double mz = ft.mz * admParams.mz_gain;
+
+    // 力死区
+    if (std::abs(fx) < admParams.force_threshold) fx = 0.0;
+    if (std::abs(fy) < admParams.force_threshold) fy = 0.0;
+    if (std::abs(mz) < admParams.torque_threshold) mz = 0.0;
+
+    // XY 导纳：a = (F - B*v) / M（显式积分）
+    double ax = (fx - admParams.B_xy * admState.vel_x) / admParams.M_xy;
+    double ay = (fy - admParams.B_xy * admState.vel_y) / admParams.M_xy;
+    admState.vel_x += ax * dt;
+    admState.vel_y += ay * dt;
+    admState.pos_x += admState.vel_x * dt;
+    admState.pos_y += admState.vel_y * dt;
+
+    // 限幅
+    admState.pos_x = std::clamp(admState.pos_x, -admParams.delta_xy_max, admParams.delta_xy_max);
+    admState.pos_y = std::clamp(admState.pos_y, -admParams.delta_xy_max, admParams.delta_xy_max);
+
+    // 绕 Z 轴旋转导纳
+    double arz = (mz - admParams.B_rz * admState.vel_rz) / admParams.M_rz;
+    admState.vel_rz += arz * dt;
+    admState.pos_rz += admState.vel_rz * dt;
+    admState.pos_rz = std::clamp(admState.pos_rz, -admParams.delta_rz_max, admParams.delta_rz_max);
+
+    // 导纳输出：工具坐标系下的 delta
+    delta_x = admState.pos_x;
+    delta_y = admState.pos_y;
+    delta_rz = admState.pos_rz;
+}
+
 void MainWindow::makeMoveL()
 {
     // 位置 ml_x/y/z：用户输入米 (m)，KDL::Vector 内部存储也是米
     // 姿态 ml_roll/pitch/yaw：用户输入度 (deg)，
+
+    // 采集六维力零漂：启动时的读数作为基准
+    M4313_TxPDO rawFt;
+    etherThread.ftMutex.lock();
+    rawFt = etherThread.latestFtData;
+    etherThread.ftMutex.unlock();
+    ftZeroDrift = rawFt;
+    printf("六维力零漂: fx=%.2f fy=%.2f fz=%.2f mx=%.2f my=%.2f mz=%.2f\n",
+           ftZeroDrift.fx, ftZeroDrift.fy, ftZeroDrift.fz,
+           ftZeroDrift.mx, ftZeroDrift.my, ftZeroDrift.mz);
+
     // Step 1: 获取当前末端位姿
     Pose start_pose = lastFeedbackPositionPose();
     bool jointLimit = ui->cb_jointLimit_3->currentIndex() == 0;
@@ -906,7 +956,7 @@ void MainWindow::makeMoveL()
     input.min_velocity = {-v_norm};
     input.max_acceleration = {a_norm};
     input.min_acceleration = {-a_norm};
-    input.max_jerk = {2.0};
+    input.max_jerk = {100.0};
 
     ruckig::Trajectory<1> trajectory;
     ruckig::Result result = otg.calculate(input, trajectory);
@@ -919,6 +969,7 @@ void MainWindow::makeMoveL()
            duration, dist, theta * KDL::rad2deg);
 
     // Step 5: 按 dt 步长采样 s(t)，生成笛卡尔轨迹点
+    admState.reset();  // 重置导纳积分状态
     std::array<double, 1> s_arr;
     std::array<std::vector<int32_t>, KDL_ROBOT_JOINT_NUM> lines;
     std::queue<std::array<double, KDL_ROBOT_JOINT_NUM>> joints;
@@ -926,6 +977,8 @@ void MainWindow::makeMoveL()
 
     std::array<std::vector<int32_t>, 7> lines_arr;
     int cnt = 0;
+
+    bool admEnable = ui->cb_admEnable->isChecked();
 
     for (double t = 0.0; t <= duration; t += 0.01) {
         trajectory.at_time(t, s_arr);
@@ -942,8 +995,50 @@ void MainWindow::makeMoveL()
         } else {
             double theta_s = s * theta;
             KDL::Vector axis_s = axis;  // 旋转轴不变
-            KDL::Rotation R_s = KDL::Rotation::Rot2(axis_s, theta_s);
+            // KDL::Rotation R_s = KDL::Rotation::Rot2(axis_s, theta_s);
+            KDL::Rotation R_s = KDL::Rotation::Rot(axis_s, theta_s);
             R = R_start * R_s;
+        }
+
+        // === 导纳柔顺补偿（IK 之前） ===
+        if (admEnable) {
+            // 读取原始力（传感器坐标系）→ 去零漂 → 转换到法兰盘坐标系
+            M4313_TxPDO rawFt;
+            etherThread.ftMutex.lock();
+            rawFt = etherThread.latestFtData;
+            etherThread.ftMutex.unlock();
+
+            // 去除零漂
+            double fx_sensor = rawFt.fx - ftZeroDrift.fx;
+            double fy_sensor = rawFt.fy - ftZeroDrift.fy;
+            double mz_sensor = (rawFt.mz - ftZeroDrift.mz) * admParams.mz_gain;
+
+            // 传感器坐标系 → 法兰盘坐标系（绕Z轴135°）
+            // [fx_flange, fy_flange]^T = sensorRot * [fx_sensor, fy_sensor]^T
+            KDL::Vector f_sensor(fx_sensor, fy_sensor, 0.0);
+            KDL::Vector f_flange = sensorRot * f_sensor;
+            M4313_TxPDO ft;  // 法兰盘坐标系下的力
+            ft.fx = f_flange.x();
+            ft.fy = f_flange.y();
+            ft.mz = mz_sensor;  // 绕Z轴力矩不受XY旋转影响
+
+            double delta_x = 0.0, delta_y = 0.0, delta_rz = 0.0;
+            computeAdmittanceDelta(ft, R, 0.01, delta_x, delta_y, delta_rz);
+
+            // 位置补偿：工具坐标系 delta → 基坐标系（R 将工具系向量映射到基系）
+            KDL::Vector delta_base = R * KDL::Vector(delta_x, delta_y, 0.0);
+            P = P + delta_base;
+
+            // 绕 Z 轴旋转补偿：工具坐标系下绕 Z 轴旋转
+            // R_corrected = R_base_tool * Rot_tool_Z(delta_rz)
+            if (std::abs(delta_rz) > 1e-8) {
+                R = R * KDL::Rotation::RotZ(delta_rz);
+            }
+
+            if (cnt == 0) {
+                printf("makeMoveL adm: dx=%.4f dy=%.4f drz=%.4f deg\n",
+                       delta_x, delta_y, delta_rz * KDL::rad2deg);
+            }
         }
 
         // 转为 Pose
@@ -1004,7 +1099,20 @@ void MainWindow::makeMoveL()
 
 void MainWindow::on_moveLGo_clicked()
 {
+    // 每次运行时从 UI 加载导纳参数，防止未点"应用"就直接运行
+    on_admApply_clicked();
     makeMoveL();
+}
+
+void MainWindow::on_admApply_clicked()
+{
+    admParams.M_xy = ui->adm_Mxy->text().toDouble();
+    admParams.B_xy = ui->adm_Bxy->text().toDouble();
+    admParams.K_xy = ui->adm_Kxy->text().toDouble();
+    admParams.B_rz = ui->adm_Brz->text().toDouble();
+    admParams.mz_gain = ui->adm_mzGain->text().toDouble();
+    printf("导纳参数已应用: Mxy=%.2f Bxy=%.1f Kxy=%.1f Brz=%.1f mz_gain=%.1f\n",
+           admParams.M_xy, admParams.B_xy, admParams.K_xy, admParams.B_rz, admParams.mz_gain);
 }
 
 void MainWindow::on_actStart_clicked()

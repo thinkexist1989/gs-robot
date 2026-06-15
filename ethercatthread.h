@@ -160,6 +160,8 @@ public:
     int current_line_index = 0;
     int expectedWKC;
     boolean needlf;
+    M4313_TxPDO latestFtData;
+    mutable QMutex ftMutex;
     explicit EtherCatThread();
     int setInputsCMD(const InputsCMD &cmd);
     void stopThread();

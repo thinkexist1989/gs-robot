@@ -22,6 +22,28 @@
 #include "socketthread.h"
 #include "vision.h"
 
+struct AdmittanceParams {
+    double M_xy = 1.0;        // XY 导纳质量 (kg)
+    double B_xy = 300.0;      // XY 导纳阻尼 (N·s/m)
+    double K_xy = 0.0;        // XY 导纳刚度 (N/m)
+    double M_rz = 0.01;       // 绕Z旋转导纳转动惯量 (kg·m²)
+    double B_rz = 300.0;      // 绕Z旋转导纳阻尼 (N·m·s/rad)
+    double K_rz = 0.0;        // 绕Z旋转导纳刚度 (N·m/rad)
+    double mz_gain = 5.0;     // Mz 力矩放大倍数
+    double delta_xy_max = 0.01;   // XY 偏移限幅 (m)
+    double delta_rz_max = 5.0 * M_PI / 180.0;  // Z轴旋转限幅 (rad)
+    double force_threshold = 0.5; // 力死区阈值 (N)
+    double torque_threshold = 0.05; // 力矩死区阈值 (N·m)
+};
+
+struct AdmittanceState {
+    double vel_x = 0.0, vel_y = 0.0;  // XY 速度积分状态
+    double pos_x = 0.0, pos_y = 0.0;  // XY 位置积分状态
+    double vel_rz = 0.0;               // Z旋转速度积分状态
+    double pos_rz = 0.0;               // Z旋转位置积分状态
+    void reset() { vel_x = vel_y = pos_x = pos_y = vel_rz = pos_rz = 0.0; }
+};
+
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
@@ -97,6 +119,7 @@ private slots:
     void on_adjustGo_clicked();
     void on_run_by_vision_clicked();
     void on_moveLGo_clicked();
+    void on_admApply_clicked();
 
 private:
     EngDatas engDatas;
@@ -112,5 +135,13 @@ private:
     QString getLocalIP();//获取本机IP地址
     void udpSet();
     QLabel  *LabSocketState;  //状态栏显示标签
+
+    // 导纳控制
+    AdmittanceParams admParams;
+    AdmittanceState  admState;
+    KDL::Rotation sensorRot;  // 六维力传感器坐标系到法兰盘坐标系的旋转（绕Z轴135°）
+    M4313_TxPDO ftZeroDrift;  // 六维力零漂
+    void computeAdmittanceDelta(const M4313_TxPDO& ft, const KDL::Rotation& R_tool,
+                                double dt, double& delta_x, double& delta_y, double& delta_rz);
 };
 #endif // MAINWINDOW_H

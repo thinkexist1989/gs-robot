@@ -992,8 +992,8 @@
    <widget class="QWidget" name="layoutWidget">
     <property name="geometry">
      <rect>
-      <x>590</x>
-      <y>260</y>
+      <x>580</x>
+      <y>270</y>
       <width>441</width>
       <height>20</height>
      </rect>
@@ -2221,11 +2221,11 @@ display</string>
      <rect>
       <x>490</x>
       <y>200</y>
-      <width>750</width>
+      <width>790</width>
       <height>27</height>
      </rect>
     </property>
-    <layout class="QHBoxLayout" name="horizontalLayout_20" stretch="0,0,0,0,0,0,0,0,0,0,0">
+    <layout class="QHBoxLayout" name="horizontalLayout_20" stretch="0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0">
      <item>
       <widget class="QLabel" name="label_50">
        <property name="text">
@@ -2347,6 +2347,105 @@ display</string>
      </item>
     </layout>
    </widget>
+   <widget class="QWidget" name="layoutWidget_adm">
+    <property name="geometry">
+     <rect>
+      <x>490</x>
+      <y>230</y>
+      <width>750</width>
+      <height>32</height>
+     </rect>
+    </property>
+    <layout class="QHBoxLayout" name="horizontalLayout_adm">
+     <property name="spacing">
+      <number>4</number>
+     </property>
+     <item>
+      <widget class="QCheckBox" name="cb_admEnable">
+       <property name="text">
+        <string>导纳</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="label_admMxy">
+       <property name="text">
+        <string>Mxy</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="adm_Mxy">
+       <property name="text">
+        <string>1.0</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="label_admBxy">
+       <property name="text">
+        <string>Bxy</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="adm_Bxy">
+       <property name="text">
+        <string>300</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="label_admKxy">
+       <property name="text">
+        <string>Kxy</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="adm_Kxy">
+       <property name="text">
+        <string>0</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="label_admBrz">
+       <property name="text">
+        <string>Brz</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="adm_Brz">
+       <property name="text">
+        <string>300</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="label_admGain">
+       <property name="text">
+        <string>Mz</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="adm_mzGain">
+       <property name="text">
+        <string>5.0</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="admApply">
+       <property name="text">
+        <string>应用</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
@@ -2354,7 +2453,7 @@ display</string>
      <x>0</x>
      <y>0</y>
      <width>1249</width>
-     <height>28</height>
+     <height>22</height>
     </rect>
    </property>
    <widget class="QMenu" name="menusetting">

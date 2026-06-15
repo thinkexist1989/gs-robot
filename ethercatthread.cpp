@@ -527,8 +527,14 @@ int EtherCatThread::slave_execute_command(){
           engDatas.ActualStatus[j].ModeOp    = iptr->ModeOp;
        }
        M4313_TxPDO ft;
-       if (readM4313Data(8, ft) && cnt % 100 == 0) {
-           printf("No=%u, %f, %f, %f, %f, %f, %f\n", ft.data_no, ft.fx, ft.fy, ft.fz, ft.mx, ft.my, ft.mz);
+       if (readM4313Data(8, ft)) {
+           ftMutex.lock();
+           latestFtData = ft;
+           ftMutex.unlock();
+           if (cnt % 100 == 0) {
+               printf("FT No=%u, fx=%.2f fy=%.2f fz=%.2f mx=%.2f my=%.2f mz=%.2f\n",
+                      ft.data_no, ft.fx, ft.fy, ft.fz, ft.mx, ft.my, ft.mz);
+           }
        }
        if (cnt % 1 == 0){
            // reduce the Hz
