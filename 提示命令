@@ -1,0 +1,15 @@
+cd  /opt/Qt5.12.0/Tools/QtCreator/bin/
+sudo ./qtcreator
+
+
+socat  -d -d pty,b115200  pty,b115200
+2025/03/10 18:09:51 socat[3818] N PTY is /dev/pts/2
+2025/03/10 18:09:51 socat[3818] N PTY is /dev/pts/3
+2025/03/10 18:09:51 socat[3818] N starting data transfer loop with FDs [5,5] and [7,7]
+
+echo hello > /dev/pts/2
+cat /dev/pts/2 | hexdump -C
+
+sudo minicom -D /dev/pts/4 -H -b  115200 -w
+
+
